@@ -1,0 +1,19 @@
+# Phone Connector Application Requirements
+# No external packages required - uses only Python standard library
+
+# Python version: 3.7 or higher
+# Required system tools:
+# - Android SDK Platform Tools (for ADB)
+# - tkinter (usually included with Python)
+
+# Standard library modules used:
+# - tkinter (GUI)
+# - subprocess (ADB commands)
+# - threading (background operations)
+# - socket (network operations)
+# - ipaddress (network calculations)
+# - time (delays and timeouts)
+# - os (file operations)
+# - sys (system operations)
+# - platform (OS detection)
+# - datetime (timestamps)
