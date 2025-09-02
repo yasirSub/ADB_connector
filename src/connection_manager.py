@@ -2,6 +2,7 @@ import threading
 import time
 from typing import Dict, Optional, Callable
 from .device_manager import DeviceManager
+from .subprocess_utils import run_no_window
 
 class ConnectionManager:
     """Manages device connections and information updates"""

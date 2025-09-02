@@ -4,6 +4,7 @@ import ipaddress
 import threading
 import time
 from typing import List, Dict, Optional, Tuple
+from .subprocess_utils import run_no_window
 
 class NetworkDetector:
     """Detects network information and finds devices on the same network"""
@@ -133,7 +134,7 @@ class NetworkDetector:
         """Find device IP address when connected via USB"""
         try:
             # Get device IP using ADB
-            result = subprocess.run([
+            result = run_no_window([
                 self.adb_path, "-s", device_id, "shell", "ip", "route"
             ], capture_output=True, text=True, timeout=10)
             
@@ -149,7 +150,7 @@ class NetworkDetector:
                                     return parts[i + 1]
             
             # Alternative method: get IP from network interface
-            result = subprocess.run([
+            result = run_no_window([
                 self.adb_path, "-s", device_id, "shell", "ip", "addr", "show", "wlan0"
             ], capture_output=True, text=True, timeout=10)
             
@@ -170,7 +171,7 @@ class NetworkDetector:
         """Enable WiFi debugging on device"""
         try:
             # Enable WiFi debugging
-            result = subprocess.run([
+            result = run_no_window([
                 self.adb_path, "-s", device_id, "tcpip", port
             ], capture_output=True, text=True, timeout=10)
             

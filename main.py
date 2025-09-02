@@ -11,6 +11,7 @@ import os
 import json
 import subprocess
 import time
+from src.subprocess_utils import run_no_window
 
 # Add src directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -55,6 +56,9 @@ class PhoneConnectorApp:
         # Set up callbacks
         self.setup_callbacks()
         
+        # Load saved WiFi configurations first
+        self.load_wifi_config()
+        
         # Start initial device scan
         self.start_initial_scan()
         
@@ -64,14 +68,14 @@ class PhoneConnectorApp:
         # Start automatic device monitoring
         self.start_device_monitoring()
         
-        # Load saved WiFi configurations
-        self.load_wifi_config()
-        
         # Check for network changes and guide user
         self.check_network_status()
         
         # Start automatic WiFi connection detection
         self.start_wifi_auto_detection()
+        
+        # Try auto-connect to last WiFi IP if no devices are connected
+        self.auto_connect_last_wifi()
     
     def setup_callbacks(self):
         """Set up callback functions between components"""
@@ -132,8 +136,7 @@ class PhoneConnectorApp:
                     # Get current devices
                     current_devices = set()
                     if self.adb_path:
-                        import subprocess
-                        result = subprocess.run([self.adb_path, "devices"], 
+                        result = run_no_window([self.adb_path, "devices"], 
                                               capture_output=True, text=True, timeout=10)
                         if result.returncode == 0:
                             lines = result.stdout.strip().split('\n')[1:]  # Skip header
@@ -180,20 +183,32 @@ class PhoneConnectorApp:
         monitoring_thread.start()
     
     def auto_connect_device(self, device_id: str):
-        """Automatically connect to a newly detected device"""
+        """Automatically connect to a newly detected device (supports multiple devices)"""
         try:
             # Check if device is already connected via WiFi
-            if device_id in self.connection_manager.connected_devices:
-                self.root.after(0, self.gui_manager.log_message, f"✅ Device {device_id} already connected")
+            wifi_device_id = None
+            for connected_device in self.device_manager.connected_devices:
+                if ':' in connected_device:  # WiFi device
+                    # Extract IP from WiFi device ID (format: IP:port)
+                    wifi_ip = connected_device.split(':')[0]
+                    # Check if this USB device's WiFi IP matches any connected WiFi device
+                    phone_ip = self.get_device_wifi_ip(device_id)
+                    if phone_ip and phone_ip == wifi_ip:
+                        wifi_device_id = connected_device
+                        break
+            
+            if wifi_device_id:
+                self.root.after(0, self.gui_manager.log_message, f"✅ Device {device_id} already connected via WiFi as {wifi_device_id}")
                 self.root.after(0, self.gui_manager.update_connection_status, f"✅ Connected", "green")
                 return
             
-            # Create device info
+            # Create device info with better name detection
+            device_name = self.get_device_display_name(device_id)
             device_info = {
                 'device_id': device_id,
                 'status': 'Detected',
                 'connection_type': 'USB',
-                'device_name': device_id
+                'device_name': device_name
             }
             
             # Update GUI
@@ -217,10 +232,22 @@ class PhoneConnectorApp:
                     self.root.after(0, self.gui_manager.log_message, f"🌐 Phone WiFi IP detected: {phone_ip}")
                     self.root.after(0, self.gui_manager.log_message, f"🔄 Attempting automatic WiFi connection...")
                     
-                    # Try automatic WiFi connection
+                    # Try automatic WiFi connection (this will maintain existing connections)
                     if self.auto_connect_wifi(phone_ip):
                         self.root.after(0, self.gui_manager.log_message, f"🎉 Auto-connected to {phone_ip} via WiFi!")
-                        self.root.after(0, self.gui_manager.update_connection_status, f"✅ Connected to {phone_ip}", "green")
+                        
+                        # Count total connected devices
+                        connected_count = len(self.device_manager.connected_devices)
+                        if connected_count > 1:
+                            self.root.after(0, self.gui_manager.update_connection_status, f"✅ {connected_count} devices connected", "green")
+                            # Update tray with multi-device status
+                            self.root.after(0, self.gui_manager.update_tray_device_status, 
+                                          device_name=f"{connected_count} devices", 
+                                          connection_type="WiFi", 
+                                          status="Connected")
+                        else:
+                            self.root.after(0, self.gui_manager.update_connection_status, f"✅ Connected to {phone_ip}", "green")
+                        
                         self.root.after(0, self.gui_manager.update_auto_connection_status, f"✅ Connected to {phone_ip}", "green")
                         
                         # Auto-fill the IP field with the correct IP
@@ -251,7 +278,7 @@ class PhoneConnectorApp:
                 return
             
             import subprocess
-            result = subprocess.run([self.adb_path, "devices"], 
+            result = run_no_window([self.adb_path, "devices"], 
                                   capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
@@ -502,11 +529,18 @@ class PhoneConnectorApp:
         threading.Thread(target=connect_thread, daemon=True).start()
     
     def handle_connect_wifi(self):
-        """Handle direct WiFi connection"""
+        """Handle direct WiFi connection (supports multiple devices)"""
         ip, port = self.gui_manager.get_wifi_settings()
         
         if not ip or not port:
             self.gui_manager.show_error("Error", "Please enter IP address and port")
+            return
+        
+        device_id = f"{ip}:{port}"
+        
+        # Check if device is already connected
+        if device_id in self.device_manager.connected_devices:
+            self.gui_manager.show_info("Info", f"Device {ip}:{port} is already connected!")
             return
         
         self.gui_manager.log_message(f"🔗 Attempting WiFi connection to {ip}:{port}...")
@@ -531,19 +565,32 @@ class PhoneConnectorApp:
                     self.root.after(0, self.gui_manager.log_message, f"🔗 ADB WiFi connection result: {success}")
                     
                     if success:
-                        # Add to device list
-                        device_id = f"{ip}:{port}"
+                        # Add to device list (maintains existing connections)
                         if device_id not in self.device_manager.connected_devices:
                             self.device_manager.connected_devices.append(device_id)
                         
                         # Save successful connection configuration
                         self.save_wifi_config(ip, port)
                         
+                        # Update device list with all connected devices
                         self.root.after(0, self.update_device_list, self.device_manager.connected_devices)
+                        
+                        # Count connected devices
+                        connected_count = len(self.device_manager.connected_devices)
+                        
                         self.root.after(0, self.gui_manager.log_message, f"🎉 Successfully connected to {ip}:{port}")
-                        self.root.after(0, self.gui_manager.show_info, "Success", f"Connected to {ip}:{port}")
+                        self.root.after(0, self.gui_manager.show_info, "Success", f"Connected to {ip}:{port}\nTotal devices: {connected_count}")
                         self.root.after(0, self.gui_manager.update_status, f"Connected via WiFi: {ip}:{port}")
-                        self.root.after(0, self.gui_manager.update_connection_status, f"✅ Connected to {ip}", "green")
+                        
+                        if connected_count > 1:
+                            self.root.after(0, self.gui_manager.update_connection_status, f"✅ {connected_count} devices connected", "green")
+                            # Update tray with multi-device status
+                            self.root.after(0, self.gui_manager.update_tray_device_status, 
+                                          device_name=f"{connected_count} devices", 
+                                          connection_type="WiFi", 
+                                          status="Connected")
+                        else:
+                            self.root.after(0, self.gui_manager.update_connection_status, f"✅ Connected to {ip}", "green")
                         
                         # Show connection success guidance
                         self.root.after(0, self.show_connection_guidance, "success", ip)
@@ -647,7 +694,7 @@ class PhoneConnectorApp:
             
             # Get device model and manufacturer
             try:
-                result = subprocess.run([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.model"], 
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.model"], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     detailed_info['model'] = result.stdout.strip()
@@ -655,7 +702,7 @@ class PhoneConnectorApp:
                 detailed_info['model'] = 'Unknown'
             
             try:
-                result = subprocess.run([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.manufacturer"], 
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.manufacturer"], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     detailed_info['manufacturer'] = result.stdout.strip()
@@ -664,7 +711,7 @@ class PhoneConnectorApp:
             
             # Get Android version and API level
             try:
-                result = subprocess.run([self.adb_path, "-s", device_id, "shell", "getprop", "ro.build.version.release"], 
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.build.version.release"], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     detailed_info['android_version'] = result.stdout.strip()
@@ -672,7 +719,7 @@ class PhoneConnectorApp:
                 detailed_info['android_version'] = 'Unknown'
             
             try:
-                result = subprocess.run([self.adb_path, "-s", device_id, "shell", "getprop", "ro.build.version.sdk"], 
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.build.version.sdk"], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     detailed_info['api_level'] = f"API {result.stdout.strip()}"
@@ -681,7 +728,7 @@ class PhoneConnectorApp:
             
             # Get build information
             try:
-                result = subprocess.run([self.adb_path, "-s", device_id, "shell", "getprop", "ro.build.display.id"], 
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.build.display.id"], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     detailed_info['build_number'] = result.stdout.strip()
@@ -689,7 +736,7 @@ class PhoneConnectorApp:
                 detailed_info['build_number'] = 'Unknown'
             
             try:
-                result = subprocess.run([self.adb_path, "-s", device_id, "shell", "getprop", "ro.build.version.security_patch"], 
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.build.version.security_patch"], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     detailed_info['security_patch'] = result.stdout.strip()
@@ -698,7 +745,7 @@ class PhoneConnectorApp:
             
             # Get battery information
             try:
-                result = subprocess.run([self.adb_path, "-s", device_id, "shell", "dumpsys", "battery"], 
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "dumpsys", "battery"], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     output = result.stdout
@@ -734,7 +781,7 @@ class PhoneConnectorApp:
             
             # Get device name
             try:
-                result = subprocess.run([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.name"], 
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.name"], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     detailed_info['device_name'] = result.stdout.strip()
@@ -758,7 +805,7 @@ class PhoneConnectorApp:
             
             # Get developer options status
             try:
-                result = subprocess.run([self.adb_path, "-s", device_id, "shell", "settings", "get", "global", "development_settings_enabled"], 
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "settings", "get", "global", "development_settings_enabled"], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     enabled = result.stdout.strip()
@@ -770,7 +817,7 @@ class PhoneConnectorApp:
             
             # Get WiFi debugging status
             try:
-                result = subprocess.run([self.adb_path, "-s", device_id, "shell", "settings", "get", "global", "adb_wifi_enabled"], 
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "settings", "get", "global", "adb_wifi_enabled"], 
                                       capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
                     enabled = result.stdout.strip()
@@ -960,8 +1007,27 @@ Last known device IP: {last_ip}"""
             
         elif guidance_type == "success":
             title = "Connection Successful!"
-            message = f"""🎉 Successfully connected to {last_ip}!
+            connected_count = len(self.device_manager.connected_devices)
+            if connected_count > 1:
+                message = f"""🎉 Successfully connected to {last_ip}!
+                
+Total devices connected: {connected_count}
 
+Multi-device features:
+• All devices remain connected simultaneously
+• You can connect additional devices without disconnecting others
+• Each device maintains its own connection
+• Tray icon shows total device count
+
+Your WiFi connection has been saved for future use.
+
+Next time you open the software:
+1. If on the same network: IP will be auto-filled
+2. If network changed: You'll be guided to reconnect
+3. If connection fails: USB fallback will be suggested"""
+            else:
+                message = f"""🎉 Successfully connected to {last_ip}!
+                
 Your WiFi connection has been saved for future use.
 
 Next time you open the software:
@@ -1039,6 +1105,55 @@ Option 3 - Auto Connect:
         
         self.gui_manager.show_info(title, message)
 
+    def auto_connect_last_wifi(self):
+        """Auto-connect to last used WiFi IP if no devices are connected"""
+        def auto_connect_thread():
+            try:
+                # Wait a moment for initial scan to complete
+                time.sleep(3)
+                
+                # Check if we have any connected devices
+                current_devices = self.get_usb_devices()
+                wifi_devices = [d for d in self.device_manager.connected_devices if ':' in d]
+                
+                if not current_devices and not wifi_devices:
+                    # No devices connected, try to auto-connect to last WiFi IP
+                    if self.wifi_config.get('last_ip'):
+                        last_ip = self.wifi_config['last_ip']
+                        last_port = self.wifi_config.get('last_port', '5555')
+                        
+                        self.root.after(0, self.gui_manager.log_message, f"🔄 No devices connected, trying auto-connect to last WiFi: {last_ip}:{last_port}")
+                        
+                        # Check if device is on same network
+                        pc_ip = self.connection_manager.get_pc_ip()
+                        if self.is_same_network(last_ip, pc_ip):
+                            # Test connection first
+                            if self.network_detector.test_connection(last_ip, last_port):
+                                self.root.after(0, self.gui_manager.log_message, f"✅ Last WiFi device is reachable: {last_ip}:{last_port}")
+                                
+                                # Try to connect
+                                if self.auto_connect_wifi(last_ip):
+                                    self.root.after(0, self.gui_manager.log_message, f"🎉 Auto-connected to last WiFi device: {last_ip}:{last_port}")
+                                    self.root.after(0, self.gui_manager.update_connection_status, f"✅ Connected to {last_ip}", "green")
+                                    
+                                    # Auto-fill the IP field
+                                    self.root.after(0, self.gui_manager.ip_entry.delete, 0, tk.END)
+                                    self.root.after(0, self.gui_manager.ip_entry.insert, 0, last_ip)
+                                else:
+                                    self.root.after(0, self.gui_manager.log_message, f"⚠️ Auto-connect failed to {last_ip}:{last_port}")
+                            else:
+                                self.root.after(0, self.gui_manager.log_message, f"⚠️ Last WiFi device not reachable: {last_ip}:{last_port}")
+                        else:
+                            self.root.after(0, self.gui_manager.log_message, f"⚠️ Last WiFi device on different network: {last_ip}")
+                else:
+                    self.root.after(0, self.gui_manager.log_message, f"📱 Devices already connected, skipping auto-connect")
+                    
+            except Exception as e:
+                self.root.after(0, self.gui_manager.log_message, f"Auto-connect error: {str(e)}")
+        
+        # Start auto-connect in background thread
+        threading.Thread(target=auto_connect_thread, daemon=True).start()
+
     def start_wifi_auto_detection(self):
         """Start automatic WiFi connection detection"""
         def auto_detect_wifi():
@@ -1060,7 +1175,7 @@ Option 3 - Auto Connect:
                                     self.root.after(0, self.gui_manager.log_message, f"🌐 Auto-detected phone on WiFi: {phone_ip}")
                                     self.root.after(0, self.gui_manager.update_connection_status, f"📱 Auto-connecting to {phone_ip}...", "orange")
                                     
-                                    # Try automatic WiFi connection
+                                    # Try automatic WiFi connection (this will maintain existing connections)
                                     if self.auto_connect_wifi(phone_ip):
                                         self.root.after(0, self.gui_manager.log_message, f"🎉 Auto-connected to {phone_ip} via WiFi!")
                                         self.root.after(0, self.gui_manager.update_connection_status, f"✅ Connected to {phone_ip}", "green")
@@ -1070,7 +1185,7 @@ Option 3 - Auto Connect:
                                         self.root.after(0, self.gui_manager.update_connection_status, f"📱 Ready to connect", "blue")
                     
                     # Wait before next check
-                    time.sleep(10)  # Check every 10 seconds
+                    time.sleep(30)  # Check every 30 seconds
                     
                 except Exception as e:
                     self.root.after(0, self.gui_manager.log_message, f"Auto-detection error: {str(e)}")
@@ -1086,7 +1201,7 @@ Option 3 - Auto Connect:
             if not self.adb_path:
                 return []
             
-            result = subprocess.run([self.adb_path, "devices"], 
+            result = run_no_window([self.adb_path, "devices"], 
                                   capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
@@ -1106,6 +1221,52 @@ Option 3 - Auto Connect:
             print(f"Error getting USB devices: {str(e)}")
             return []
     
+    def get_device_display_name(self, device_id: str) -> str:
+        """Get a better display name for the device"""
+        try:
+            if not self.adb_path:
+                return device_id
+            
+            # Try to get device model and manufacturer
+            try:
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.model"], 
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    model = result.stdout.strip()
+                    if model and model != "Unknown":
+                        # Try to get manufacturer too
+                        try:
+                            result2 = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.manufacturer"], 
+                                                   capture_output=True, text=True, timeout=5)
+                            if result2.returncode == 0:
+                                manufacturer = result2.stdout.strip()
+                                if manufacturer and manufacturer != "Unknown":
+                                    return f"{manufacturer} {model}"
+                                else:
+                                    return model
+                        except:
+                            return model
+            except:
+                pass
+            
+            # Try to get device name
+            try:
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.name"], 
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    name = result.stdout.strip()
+                    if name and name != "Unknown":
+                        return name
+            except:
+                pass
+            
+            # Fallback to device ID
+            return device_id
+            
+        except Exception as e:
+            print(f"Error getting device display name: {e}")
+            return device_id
+
     def get_device_wifi_ip(self, device_id: str) -> str:
         """Get WiFi IP address of a USB-connected device"""
         try:
@@ -1115,7 +1276,7 @@ Option 3 - Auto Connect:
             print(f"Getting WiFi IP for device: {device_id}")
             
             # Method 1: Get device's WiFi IP address using 'ip route'
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "ip", "route"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "ip", "route"], 
                                   capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
@@ -1128,7 +1289,7 @@ Option 3 - Auto Connect:
                             return ip
             
             # Method 2: Get WiFi interface IP using 'ifconfig wlan0'
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "ifconfig", "wlan0"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "ifconfig", "wlan0"], 
                                   capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
@@ -1145,7 +1306,7 @@ Option 3 - Auto Connect:
                         return ip
             
             # Method 3: Get WiFi interface IP using 'ip addr show wlan0'
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "ip", "addr", "show", "wlan0"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "ip", "addr", "show", "wlan0"], 
                                   capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
@@ -1160,7 +1321,7 @@ Option 3 - Auto Connect:
                                 return ip
             
             # Method 4: Get all network interfaces
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "ip", "addr"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "ip", "addr"], 
                                   capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
@@ -1181,9 +1342,15 @@ Option 3 - Auto Connect:
             return None
     
     def auto_connect_wifi(self, phone_ip: str) -> bool:
-        """Automatically connect to phone via WiFi"""
+        """Automatically connect to phone via WiFi (supports multiple devices)"""
         try:
             port = "5555"  # Default ADB port
+            device_id = f"{phone_ip}:{port}"
+            
+            # Check if device is already connected
+            if device_id in self.device_manager.connected_devices:
+                print(f"Device {device_id} already connected")
+                return True
             
             # First test if we can reach the phone
             if not self.network_detector.test_connection(phone_ip, port):
@@ -1195,16 +1362,23 @@ Option 3 - Auto Connect:
             success = self.device_manager.connect_wifi("", phone_ip, port)
             
             if success:
-                # Add to device list
-                device_id = f"{phone_ip}:{port}"
+                # Add to device list (maintains existing connections)
                 if device_id not in self.device_manager.connected_devices:
                     self.device_manager.connected_devices.append(device_id)
                 
                 # Save successful connection
                 self.save_wifi_config(phone_ip, port)
                 
-                # Update GUI
+                # Update GUI with all connected devices
                 self.root.after(0, self.update_device_list, self.device_manager.connected_devices)
+                
+                # Update tray with multi-device status
+                connected_count = len(self.device_manager.connected_devices)
+                if connected_count > 1:
+                    self.root.after(0, self.gui_manager.update_tray_device_status, 
+                                  device_name=f"{connected_count} devices", 
+                                  connection_type="WiFi", 
+                                  status="Connected")
                 
                 return True
             else:
@@ -1231,14 +1405,14 @@ Option 3 - Auto Connect:
             self.gui_manager.log_message(f"🔄 Restarting TCP/IP on {selected_device}...")
             
             # First disconnect if connected via WiFi
-            subprocess.run([self.adb_path, "disconnect", selected_device], 
+            run_no_window([self.adb_path, "disconnect", selected_device], 
                          capture_output=True, text=True, timeout=10)
             
             # Wait a moment
             time.sleep(2)
             
             # Restart TCP/IP on the device
-            result = subprocess.run([self.adb_path, "-s", selected_device, "tcpip", "5555"], 
+            result = run_no_window([self.adb_path, "-s", selected_device, "tcpip", "5555"], 
                                   capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
@@ -1261,14 +1435,14 @@ Option 3 - Auto Connect:
             self.gui_manager.log_message(f"🔄 Restarting TCP/IP on {device_id}...")
             
             # First disconnect if connected
-            subprocess.run([self.adb_path, "disconnect", device_id], 
+            run_no_window([self.adb_path, "disconnect", device_id], 
                          capture_output=True, text=True, timeout=10)
             
             # Wait a moment
             time.sleep(2)
             
             # Restart TCP/IP on the device
-            result = subprocess.run([self.adb_path, "-s", device_id, "tcpip", "5555"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "tcpip", "5555"], 
                                   capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:

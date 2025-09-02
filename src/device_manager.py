@@ -2,6 +2,7 @@ import subprocess
 import time
 import threading
 from typing import List, Dict, Optional
+from .subprocess_utils import run_no_window
 
 class DeviceManager:
     """Manages device detection, connection, and information retrieval"""
@@ -15,15 +16,15 @@ class DeviceManager:
         """Scan for connected devices"""
         try:
             # Kill ADB server first
-            subprocess.run([self.adb_path, "kill-server"], capture_output=True)
+            run_no_window([self.adb_path, "kill-server"], capture_output=True)
             time.sleep(1)
             
             # Start ADB server
-            subprocess.run([self.adb_path, "start-server"], capture_output=True)
+            run_no_window([self.adb_path, "start-server"], capture_output=True)
             time.sleep(2)
             
             # Get device list
-            result = subprocess.run([self.adb_path, "devices"], capture_output=True, text=True)
+            result = run_no_window([self.adb_path, "devices"], capture_output=True, text=True)
             
             if result.returncode == 0:
                 lines = result.stdout.strip().split('\n')[1:]  # Skip first line
@@ -53,7 +54,7 @@ class DeviceManager:
         
         try:
             # Get device model
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.model"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.model"], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 info['device_name'] = result.stdout.strip()
@@ -61,7 +62,7 @@ class DeviceManager:
                 info['device_name'] = 'Unknown Device'
             
             # Get Android version
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "getprop", "ro.build.version.release"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.build.version.release"], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 info['android_version'] = result.stdout.strip()
@@ -69,7 +70,7 @@ class DeviceManager:
                 info['android_version'] = 'Unknown'
             
             # Get device manufacturer
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.manufacturer"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.product.manufacturer"], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 info['manufacturer'] = result.stdout.strip()
@@ -77,7 +78,7 @@ class DeviceManager:
                 info['manufacturer'] = 'Unknown'
             
             # Get device IP address
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "ip", "route"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "ip", "route"], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 lines = result.stdout.strip().split('\n')
@@ -92,7 +93,7 @@ class DeviceManager:
                 info['device_ip'] = 'Unknown'
             
             # Get battery information
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "dumpsys", "battery"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "dumpsys", "battery"], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 output = result.stdout
@@ -120,7 +121,7 @@ class DeviceManager:
                 info['charging_status'] = 'Unknown'
             
             # Get developer options status
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "settings", "get", "global", "adb_enabled"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "settings", "get", "global", "adb_enabled"], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 adb_enabled = result.stdout.strip()
@@ -129,7 +130,7 @@ class DeviceManager:
                 info['developer_options'] = 'Unknown'
             
             # Get USB debugging status
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "settings", "get", "global", "adb_wifi_enabled"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "settings", "get", "global", "adb_wifi_enabled"], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 wifi_enabled = result.stdout.strip()
@@ -138,7 +139,7 @@ class DeviceManager:
                 info['wifi_debugging'] = 'Unknown'
             
             # Get device serial number
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "getprop", "ro.serialno"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "getprop", "ro.serialno"], 
                                   capture_output=True, text=True, timeout=10)
             if result.returncode == 0:
                 info['serial_number'] = result.stdout.strip()
@@ -163,7 +164,7 @@ class DeviceManager:
                 return True
             
             # Test if we can communicate with the device
-            result = subprocess.run([self.adb_path, "-s", device_id, "shell", "echo", "Connected"], 
+            result = run_no_window([self.adb_path, "-s", device_id, "shell", "echo", "Connected"], 
                                   capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
@@ -201,7 +202,7 @@ class DeviceManager:
             
             # Try to connect via ADB
             print(f"Connecting via ADB to {ip}:{port}")
-            result = subprocess.run([self.adb_path, "connect", f"{ip}:{port}"], 
+            result = run_no_window([self.adb_path, "connect", f"{ip}:{port}"], 
                                   capture_output=True, text=True, timeout=15)
             
             print(f"ADB connect result: {result.stdout}")
@@ -223,7 +224,7 @@ class DeviceManager:
         """Disconnect a specific device"""
         try:
             if ':' in device_id:  # WiFi device
-                subprocess.run([self.adb_path, "disconnect", device_id], capture_output=True)
+                run_no_window([self.adb_path, "disconnect", device_id], capture_output=True)
             
             if device_id in self.connected_devices:
                 self.connected_devices.remove(device_id)
@@ -263,7 +264,7 @@ class DeviceManager:
             # Check if device is in our connected list
             if device_id in self.connected_devices:
                 # Verify device is still responding
-                result = subprocess.run([self.adb_path, "-s", device_id, "shell", "echo", "test"], 
+                result = run_no_window([self.adb_path, "-s", device_id, "shell", "echo", "test"], 
                                       capture_output=True, text=True, timeout=5)
                 return result.returncode == 0
             return False
